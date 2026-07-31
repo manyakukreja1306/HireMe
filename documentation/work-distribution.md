@@ -55,7 +55,7 @@ Both members jointly own `documentation/`, `results/`, and `presentation/`.
 
 ---
 
-## 3. Milestone Ownership (mapped to PRD §14)
+## 3. Milestone Ownership 
 
 | # | Milestone | Owner |
 |---|---|---|
@@ -68,8 +68,4 @@ Both members jointly own `documentation/`, `results/`, and `presentation/`.
 
 ---
 
-## 4. Communication & Review
 
-- Weekly sync to review pipeline hand-offs between the agent layer (Manya) and the application layer (Nishtha).
-- Shared documentation updated jointly after each milestone.
-- Both members review each other's pull requests before merging to `main`.
