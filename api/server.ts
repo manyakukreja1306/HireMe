@@ -49,7 +49,7 @@ const supabase: any = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 const clerk = process.env.CLERK_SECRET_KEY ? createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY }) : null;
 
 function geminiErrorText(error: any): string {
-    const parts = [error?.message, error?.statusText, error?.error?.message, error?.error?.status, error?.response?.body];
+    const parts = [error?.message, error?.statusText, error?.code, error?.error?.message, error?.error?.status, error?.response?.body];
     return parts.filter(Boolean).map((part) => typeof part === 'string' ? part : JSON.stringify(part)).join(' ').toUpperCase();
 }
 
@@ -58,12 +58,13 @@ function geminiErrorStatus(error: any): number {
     return Number.isFinite(status) ? status : 0;
 }
 
-function geminiErrorKind(error: any): 'key' | 'quota' | 'model' | 'other' {
+function geminiErrorKind(error: any): 'key' | 'quota' | 'model' | 'busy' | 'other' {
     const status = geminiErrorStatus(error);
     const text = geminiErrorText(error);
     if (status === 401 || status === 403 || /API_KEY_INVALID|API KEY NOT VALID|PERMISSION_DENIED|UNAUTHENTICATED/.test(text)) return 'key';
     if (status === 429 || /RESOURCE_EXHAUSTED|QUOTA_EXCEEDED|RATE_LIMIT|TOO MANY REQUESTS/.test(text)) return 'quota';
     if (status === 404 || /MODEL_NOT_FOUND|NOT_FOUND/.test(text)) return 'model';
+    if (status === 503 || /UNAVAILABLE|HIGH DEMAND|OVERLOADED|TEMPORARILY BUSY/.test(text)) return 'busy';
     return 'other';
 }
 
@@ -72,6 +73,7 @@ function geminiErrorMessage(error: any) {
         case 'key': return 'Gemini rejected this API key or its project permissions. Check the key in Google AI Studio and make sure the Generative Language API is allowed.';
         case 'quota': return 'Gemini free-tier quota is temporarily exhausted for this project. Wait for the quota window to reset, then try again.';
         case 'model': return 'The Gemini model is unavailable to this project. Check model access in Google AI Studio.';
+        case 'busy': return 'Gemini is temporarily busy. The app tried its free-tier backup model too; please retry in a minute.';
         default: return 'Gemini could not generate a reply. Check the Google AI Studio project and try again.';
     }
 }
@@ -84,7 +86,7 @@ async function generateGeminiContent(ai: GoogleGenAI, request: Omit<GenerateCont
         return await ai.models.generateContent({ ...request, model: GEMINI_PRIMARY_MODEL });
     } catch (error: any) {
         const kind = geminiErrorKind(error);
-        if ((kind !== 'quota' && kind !== 'model') || GEMINI_FREE_FALLBACK_MODEL === GEMINI_PRIMARY_MODEL) throw error;
+        if ((kind !== 'quota' && kind !== 'model' && kind !== 'busy') || GEMINI_FREE_FALLBACK_MODEL === GEMINI_PRIMARY_MODEL) throw error;
         console.warn(`Gemini ${kind} response; retrying once with the free-tier fallback model.`);
         return await ai.models.generateContent({ ...request, model: GEMINI_FREE_FALLBACK_MODEL });
     }
