@@ -55,6 +55,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
     const [hasSpeechAPI, setHasSpeechAPI] = useState(true);
     const [showModeMenu, setShowModeMenu] = useState(false);
     const [isSpeechMuted, setIsSpeechMuted] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('');
 
     const recognitionRef = useRef<any>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
@@ -114,6 +115,8 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             body: JSON.stringify({ message: userText, mode, history }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'The interview coach could not respond.');
+        if (typeof data.reply !== 'string' || !data.reply.trim()) throw new Error('The interview coach returned an empty response.');
         return data.reply || 'Sorry, I could not generate a response.';
     }, [mode]);
 
@@ -131,6 +134,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
         setChatHistory(newHistory);
         setLiveTranscript('');
         setPhase('processing');
+        setErrorMessage('');
 
         try {
             const aiReply = await sendToAI(transcript.trim(), newHistory);
@@ -150,6 +154,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             try { recognitionRef.current?.start(); } catch { }
         } catch (err) {
             console.error('AI error:', err);
+            setErrorMessage(err instanceof Error ? err.message : 'The interview coach could not respond. Please try again.');
             setPhase('listening');
             try { recognitionRef.current?.start(); } catch { }
         } finally {
@@ -160,6 +165,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
     // ── Start interview ──
     const startInterview = useCallback(async () => {
         setPhase('processing');
+        setErrorMessage('');
         setChatHistory([]);
         setLiveTranscript('');
         isProcessingRef.current = true;
@@ -180,6 +186,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             try { recognitionRef.current?.start(); } catch { }
         } catch (err) {
             console.error('Start error:', err);
+            setErrorMessage(err instanceof Error ? err.message : 'The interview coach could not start. Please try again.');
             setPhase('idle');
         } finally {
             isProcessingRef.current = false;
@@ -246,6 +253,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             </div>
 
             <div className="p-5 md:p-8">
+                {errorMessage && <div role="alert" className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">{errorMessage}</div>}
                 {!hasSpeechAPI && (
                     <div className="mb-6 p-4 bg-rose-50 border border-rose-100 rounded-2xl flex gap-3 text-rose-700">
                         <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />

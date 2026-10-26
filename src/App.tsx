@@ -1989,24 +1989,48 @@ const ResumeBuilderPage = () => {
 };
 
 const ResumeCheckerPage = () => {
+  const { getToken } = useAuth();
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState('');
+  const [fileName, setFileName] = useState('');
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  const analyzeResume = () => {
-    setAnalyzing(true);
+  const analyzeResume = async (file?: File) => {
+    if (!file) return;
+    setError('');
     setResult(null);
-    setTimeout(() => {
-      setAnalyzing(false);
-      setResult({
-        score: 84,
-        summary: "Your profile shows strong mastery of React and TypeScript. However, your project section lacks impact metrics (qualifiable results).",
-        tips: [
-          "Quantify your impact: Use numbers like 'increased speed by 40%'",
-          "Add more industry keywords: CI/CD, GraphQL, Unit Testing",
-          "Improve layout: Your current template is slightly outdated."
-        ]
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!['pdf', 'txt'].includes(extension || '')) { setError('Choose a PDF or TXT resume.'); return; }
+    if (file.size > 2 * 1024 * 1024) { setError('Resume must be 2 MB or smaller.'); return; }
+    setAnalyzing(true);
+    setFileName(file.name);
+    try {
+      const resumeDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const encoded = String(reader.result).split(',')[1];
+          const mimeType = extension === 'pdf' ? 'application/pdf' : 'text/plain';
+          resolve(`data:${mimeType};base64,${encoded}`);
+        };
+        reader.onerror = () => reject(new Error('Could not read that resume file.'));
+        reader.readAsDataURL(file);
       });
-    }, 2500);
+      const token = await getToken();
+      if (!token) throw new Error('Sign in as a candidate to analyze your resume.');
+      const response = await fetch('/api/resume-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ resumeDataUrl }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Resume analysis failed.');
+      setResult(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Resume analysis failed. Please try again.');
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   return (
@@ -2018,11 +2042,11 @@ const ResumeCheckerPage = () => {
         </div>
 
         <div className="grid gap-8">
+          <input ref={fileInputRef} type="file" accept=".pdf,.txt,application/pdf,text/plain" className="hidden" onChange={e => { void analyzeResume(e.target.files?.[0]); e.currentTarget.value = ''; }} />
           <div
-            onClick={analyzeResume}
             className={cn(
-              "bg-white rounded-[3rem] p-12 border-2 border-dashed transition-all text-center cursor-pointer group",
-              analyzing ? "border-indigo-600 pointer-events-none" : "border-slate-200 hover:border-indigo-400"
+              "bg-white rounded-[3rem] p-12 border-2 border-dashed transition-all text-center",
+              analyzing ? "border-indigo-600" : "border-slate-200"
             )}
           >
             <div className={cn(
@@ -2034,9 +2058,12 @@ const ResumeCheckerPage = () => {
             <h2 className="text-2xl font-bold text-slate-900 mb-2">
               {analyzing ? 'Analyzing your profile...' : 'Drop your resume here'}
             </h2>
-            <p className="text-slate-500 font-medium">Supports PDF, DOCX (Max 5MB)</p>
-            {!analyzing && <button className="mt-8 px-8 py-4 bg-well-black text-white rounded-2xl font-bold hover:bg-black transition-all">Select File</button>}
+            <p className="text-slate-500 font-medium">Supports PDF or TXT, up to 2 MB</p>
+            <p className="mt-2 text-xs text-slate-400">Your resume is sent to Gemini for analysis and is not saved by this checker.</p>
+            {fileName && !analyzing && <p className="mt-3 text-sm font-semibold text-slate-600">Selected: {fileName}</p>}
+            <button type="button" disabled={analyzing} onClick={() => fileInputRef.current?.click()} className="mt-8 px-8 py-4 bg-well-black text-white rounded-2xl font-bold hover:bg-black transition-all disabled:opacity-50">{analyzing ? 'Analyzing…' : 'Select File'}</button>
           </div>
+          {error && <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700">{error}</div>}
 
           {result && (
             <motion.div
