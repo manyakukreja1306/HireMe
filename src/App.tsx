@@ -43,7 +43,7 @@ import { companies, stats } from './data';
 import { Job, Company } from './types';
 import { useUser, useAuth, SignIn, SignUp, UserButton, useClerk } from '@clerk/clerk-react';
 import { UserProfile, Application } from './types';
-import { fetchExternalJobs } from './services/jobApi';
+import { fetchExternalJobs, rankJobsForResume } from './services/jobApi';
 import { Chatbot } from './components/Chatbot';
 import { AIHeadhunter } from './components/AIHeadhunter';
 import { AIVoiceInterview } from './components/AIVoiceInterview';
@@ -868,9 +868,63 @@ const JobsPage = ({ userProfile, setActivePage, initialSearch = '' }: { userProf
   const [applyingTo, setApplyingTo] = useState<string | null>(null);
   const [appliedJobs, setAppliedJobs] = useState<string[]>([]);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [resumeRecommendations, setResumeRecommendations] = useState<Job[]>([]);
+  const [resumeAnalysisQuery, setResumeAnalysisQuery] = useState('');
+  const [analyzingResume, setAnalyzingResume] = useState(false);
+  const [resumeUploadError, setResumeUploadError] = useState('');
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [externalApplyModalJob, setExternalApplyModalJob] = useState<Job | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleResumeUpload = async (file?: File) => {
+    if (!file) return;
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!['pdf', 'txt'].includes(extension || '')) {
+      setResumeUploadError('For personalized matches, upload a PDF or TXT resume.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setResumeUploadError('Resume must be 2 MB or smaller.');
+      return;
+    }
+
+    setResumeFile(file);
+    setResumeUploadError('');
+    setResumeRecommendations([]);
+    setResumeAnalysisQuery('');
+    setAnalyzingResume(true);
+    try {
+      const resumeDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('Could not read that resume file.'));
+        reader.readAsDataURL(file);
+      });
+      const token = await getToken();
+      if (!token) throw new Error('Sign in as a candidate to get personalized job matches.');
+
+      const response = await fetch('/api/resume-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ resumeDataUrl }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const analysis = await response.json();
+      if (!response.ok) throw new Error(analysis.error || 'Could not analyze this resume.');
+      const query = typeof analysis.jobSearchQuery === 'string' ? analysis.jobSearchQuery.trim().slice(0, 180) : '';
+      if (!query) throw new Error('The resume did not produce a job-search profile. Try a resume with readable skills and experience.');
+
+      setResumeAnalysisQuery(query);
+      if (userProfile) localStorage.setItem(`hirely_resume_search_${userProfile.uid}`, query);
+      const jobs = await fetchExternalJobs(query);
+      const rankedJobs = rankJobsForResume(jobs, query);
+      setResumeRecommendations((rankedJobs.length ? rankedJobs : jobs).slice(0, 6));
+    } catch (error) {
+      setResumeUploadError(error instanceof Error ? error.message : 'Could not find resume-matched jobs. Please try again.');
+    } finally {
+      setAnalyzingResume(false);
+    }
+  };
 
   const debouncedSearch = useDebounce(search, 500);
 
@@ -1062,27 +1116,53 @@ const JobsPage = ({ userProfile, setActivePage, initialSearch = '' }: { userProf
               <div className="ml-4 flex items-center gap-2 border-l border-slate-200 pl-4">
                 <input
                   type="file"
-                  accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                  accept=".pdf,.txt,application/pdf,text/plain"
                   className="hidden"
                   ref={fileInputRef}
                   onChange={(e) => {
-                    const file=e.target.files?.[0];
-                    if(file && file.size>2_000_000){alert('Resume files must be 2 MB or smaller.');e.target.value='';setResumeFile(null);return;}
-                    if(file && !/\.(pdf|docx|txt)$/i.test(file.name)){alert('Upload a PDF, DOCX, or TXT resume.');e.target.value='';setResumeFile(null);return;}
-                    setResumeFile(file || null);
+                    const file = e.target.files?.[0];
+                    e.currentTarget.value = '';
+                    void handleResumeUpload(file);
                   }}
                 />
                 <button
+                  type="button"
+                  disabled={analyzingResume}
                   onClick={() => fileInputRef.current?.click()}
-                  className="bg-emerald-50 text-emerald-600 px-4 py-3 rounded-xl font-bold text-sm whitespace-nowrap hover:bg-emerald-100 transition-all flex items-center gap-2"
+                  className="bg-emerald-50 text-emerald-600 px-4 py-3 rounded-xl font-bold text-sm whitespace-nowrap hover:bg-emerald-100 transition-all flex items-center gap-2 disabled:cursor-wait disabled:opacity-60"
                 >
-                  {resumeFile ? 'Resume Selected' : 'Upload Resume'}
+                  {analyzingResume ? 'Finding Matches…' : resumeFile ? 'Resume Selected' : 'Upload Resume'}
                 </button>
                 {resumeFile && <span className="text-xs text-slate-500 max-w-[100px] truncate">{resumeFile.name}</span>}
               </div>
             )}
           </div>
         </div>
+
+        {(analyzingResume || resumeUploadError || resumeAnalysisQuery || resumeRecommendations.length > 0) && (
+          <section className="mb-10 rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm" aria-live="polite">
+            {resumeUploadError && <p role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-700">{resumeUploadError}</p>}
+            {analyzingResume ? (
+              <p className="py-4 text-center font-medium text-slate-600">Analyzing your resume and finding matching jobs…</p>
+            ) : resumeAnalysisQuery ? (
+              <>
+                <div className="mb-5">
+                  <h2 className="text-xl font-bold text-slate-900">Best matches from your resume</h2>
+                  <p className="mt-1 text-sm text-slate-500">Matched roles and skills: {resumeAnalysisQuery}</p>
+                </div>
+                {resumeRecommendations.length ? (
+                  <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+                    {resumeRecommendations.map(job => (
+                      <JobCard key={job.id} job={job} onApply={() => handleApply(job)} onViewDetails={() => setSelectedJob(job)} isApplying={applyingTo === job.id} hasApplied={appliedJobs.includes(job.id)} />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="py-4 text-center text-sm text-slate-500">No matching jobs are available right now. Your resume profile is saved for future recommendations.</p>
+                )}
+              </>
+            ) : null}
+          </section>
+        )}
 
         {loading ? (
           <div className="py-20 text-center">
@@ -2031,6 +2111,7 @@ const ResumeCheckerPage = ({ userProfile }: { userProfile: UserProfile | null })
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ resumeDataUrl }),
+        signal: AbortSignal.timeout(60_000),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Resume analysis failed.');
@@ -2040,7 +2121,8 @@ const ResumeCheckerPage = ({ userProfile }: { userProfile: UserProfile | null })
         localStorage.setItem(`hirely_resume_search_${userProfile.uid}`, query);
         setSearchingJobs(true);
         const matches = await fetchExternalJobs(query);
-        setRecommendedJobs(matches.slice(0, 6));
+        const rankedMatches = rankJobsForResume(matches, query);
+        setRecommendedJobs((rankedMatches.length ? rankedMatches : matches).slice(0, 6));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Resume analysis failed. Please try again.');
