@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MessageSquare, X, Send, Bot, User } from 'lucide-react';
+import { useAuth } from '@clerk/clerk-react';
 
 interface Message {
     id: string;
@@ -9,6 +10,7 @@ interface Message {
 }
 
 export const Chatbot = () => {
+    const { getToken } = useAuth();
     const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState<Message[]>([
         {
@@ -41,9 +43,10 @@ export const Chatbot = () => {
         setIsLoading(true);
 
         try {
+            const token = await getToken();
             const response = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                 body: JSON.stringify({ message: userMessage })
             });
 

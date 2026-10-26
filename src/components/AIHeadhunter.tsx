@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Send, UserCircle, Mail, Sparkles, Loader2, Copy, CheckCircle2 } from 'lucide-react';
 import { UserProfile } from '../types';
+import { useAuth } from '@clerk/clerk-react';
 
 export const AIHeadhunter = ({ currentUser }: { currentUser: UserProfile }) => {
+    const { getToken } = useAuth();
     const [prompt, setPrompt] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [results, setResults] = useState<any[] | null>(null);
@@ -18,7 +20,8 @@ export const AIHeadhunter = ({ currentUser }: { currentUser: UserProfile }) => {
 
         try {
             // 1. Fetch all candidate profiles
-            const profilesRes = await fetch('/api/db/profiles');
+            const token = await getToken();
+            const profilesRes = await fetch('/api/db/profiles', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
             const allProfiles: UserProfile[] = await profilesRes.json();
             const candidates = allProfiles.filter(p => p.role === 'candidate');
 
@@ -30,7 +33,7 @@ export const AIHeadhunter = ({ currentUser }: { currentUser: UserProfile }) => {
 
             // 2. Prepare the AI Prompt
             const candidateListStr = candidates.map(c =>
-                `ID: ${c.uid}, Name: ${c.name}, Email: ${c.email}, Skills/Experience: (Simulated standard profile data)`
+                `Name: ${c.name}, Skills/Experience: (Simulated standard profile data)`
             ).join('\n');
 
             const systemPrompt = `
@@ -56,7 +59,7 @@ No markdown formatting or extra text outside the JSON array. Return empty array 
             // 3. Call the generic Chat API endpoint
             const aiRes = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                 body: JSON.stringify({ message: systemPrompt })
             });
 

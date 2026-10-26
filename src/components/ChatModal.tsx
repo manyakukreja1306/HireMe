@@ -4,36 +4,38 @@ import { X, Send, Video, Phone } from 'lucide-react';
 import { Message, Application, UserProfile } from '../types';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { useAuth } from '@clerk/clerk-react';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 // API helpers for chat messages
-async function apiGetChatMessages(applicationId: string): Promise<Message[]> {
+async function apiGetChatMessages(applicationId: string, token?: string): Promise<Message[]> {
   try {
-    const res = await fetch(`/api/db/messages/${applicationId}`);
+    const res = await fetch(`/api/db/messages/${applicationId}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     return await res.json();
   } catch { return []; }
 }
 
-async function apiAddChatMessage(applicationId: string, message: Message) {
+async function apiAddChatMessage(applicationId: string, message: Message, token?: string) {
   await fetch(`/api/db/messages/${applicationId}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(message)
   });
 }
 
-async function apiUpdateVideoCallStatus(applicationId: string, messageId: string, status: 'accepted' | 'rejected') {
+async function apiUpdateVideoCallStatus(applicationId: string, messageId: string, status: 'accepted' | 'rejected', token?: string) {
   await fetch(`/api/db/messages/${applicationId}/${messageId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ videoCallStatus: status })
   });
 }
 
 export const ChatModal = ({ application, currentUser, onClose }: { application: Application, currentUser: UserProfile, onClose: () => void }) => {
+  const { getToken } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -41,12 +43,13 @@ export const ChatModal = ({ application, currentUser, onClose }: { application: 
   useEffect(() => {
     // Load messages from global API
     const loadMessages = async () => {
-      const stored = await apiGetChatMessages(application.id);
+      const token = await getToken();
+      const stored = await apiGetChatMessages(application.id, token || undefined);
       setMessages(stored);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     };
     loadMessages();
-  }, [application.id]);
+  }, [application.id, getToken]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,7 +65,8 @@ export const ChatModal = ({ application, currentUser, onClose }: { application: 
 
     const updated = [...messages, msg];
     setMessages(updated);
-    await apiAddChatMessage(application.id, msg);
+    const token = await getToken();
+    await apiAddChatMessage(application.id, msg, token || undefined);
     setNewMessage('');
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
   };
@@ -84,7 +88,8 @@ export const ChatModal = ({ application, currentUser, onClose }: { application: 
 
     const updated = [...messages, msg];
     setMessages(updated);
-    await apiAddChatMessage(application.id, msg);
+    const token = await getToken();
+    await apiAddChatMessage(application.id, msg, token || undefined);
   };
 
   const updateVideoCallStatus = async (messageId: string, status: 'accepted' | 'rejected') => {
@@ -92,7 +97,8 @@ export const ChatModal = ({ application, currentUser, onClose }: { application: 
       msg.id === messageId ? { ...msg, videoCallStatus: status } : msg
     );
     setMessages(updatedMessages);
-    await apiUpdateVideoCallStatus(application.id, messageId, status);
+    const token = await getToken();
+    await apiUpdateVideoCallStatus(application.id, messageId, status, token || undefined);
   };
 
   return (

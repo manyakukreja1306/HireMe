@@ -4,6 +4,7 @@ Description: Hirely hiring decision support pipeline using API Gateway, Lambda, 
 
 Globals:
   Function:
+    PermissionsBoundary: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/HirelyLambdaExecutionBoundary'
     Runtime: nodejs22.x
     Timeout: 60
     MemorySize: 512

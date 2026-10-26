@@ -6,8 +6,8 @@ import { createClient } from '@supabase/supabase-js';
 import { canAccessApplication } from './pipelineAccess.mjs';
 import { signGatewayContext } from '../aws-pipeline/src/assertion.mjs';
 import { createHash } from 'node:crypto';
-const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
+const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 const clerk = process.env.CLERK_SECRET_KEY ? createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY }) : null;
 const MAX_RESUME_BYTES=2_000_000;
@@ -29,7 +29,7 @@ async function getProfile(userId:string):Promise<any> {
   if(!data) throw new Error('forbidden');
   return data;
 }
-async function getRole(userId:string) {
+export async function getRole(userId:string) {
   if (!clerk) throw new Error('not-configured');
   const user = await clerk.users.getUser(userId);
   const role = user.publicMetadata?.role;

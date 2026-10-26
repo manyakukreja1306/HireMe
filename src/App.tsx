@@ -78,9 +78,9 @@ function saveLocalApplications(apps: Application[]) {
   localStorage.setItem(LOCAL_APPS_KEY, JSON.stringify(apps));
 }
 
-async function apiGetStoredProfile(uid: string): Promise<UserProfile | null> {
+async function apiGetStoredProfile(uid: string, token?: string): Promise<UserProfile | null> {
   try {
-    const res = await fetch(`/api/db/profiles/${uid}`, { signal: AbortSignal.timeout(API_TIMEOUT) });
+    const res = await fetch(`/api/db/profiles/${uid}`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(API_TIMEOUT) });
     if (!res.ok) throw new Error('API error');
     const profile = await res.json();
     if (profile) {
@@ -93,13 +93,13 @@ async function apiGetStoredProfile(uid: string): Promise<UserProfile | null> {
   return local[uid] || null;
 }
 
-async function apiSaveProfile(profile: UserProfile) {
+async function apiSaveProfile(profile: UserProfile, token?: string) {
   // Always save to localStorage
   saveLocalProfile(profile);
   try {
     await fetch('/api/db/profiles', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(profile),
       signal: AbortSignal.timeout(API_TIMEOUT)
     });
@@ -201,7 +201,7 @@ async function apiGetStoredJobs(): Promise<Job[]> {
   }
 }
 
-async function apiAddPostedJob(job: Job) {
+async function apiAddPostedJob(job: Job, token?: string) {
   // Always save to localStorage as backup
   const localJobs = getLocalJobs();
   saveLocalJobs([...localJobs, job]);
@@ -209,7 +209,7 @@ async function apiAddPostedJob(job: Job) {
   try {
     await fetch('/api/db/jobs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(job),
       signal: AbortSignal.timeout(API_TIMEOUT)
     });
@@ -237,13 +237,14 @@ function downloadBase64File(base64Data: string, fileName: string) {
   }
 }
 
-async function apiDeletePostedJob(jobId: string) {
+async function apiDeletePostedJob(jobId: string, token?: string) {
   // Remove from localStorage
   saveLocalJobs(getLocalJobs().filter(j => j.id !== jobId));
   // Remove the portal job from Supabase.
   try {
     await fetch(`/api/db/jobs/${jobId}`, {
       method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
       signal: AbortSignal.timeout(API_TIMEOUT)
     });
   } catch {
@@ -1622,7 +1623,8 @@ const EmployerDashboard = ({ userProfile }: { userProfile: UserProfile }) => {
         documentUrl
       } as Job;
 
-      await apiAddPostedJob(jobData);
+      const token = await getToken();
+      await apiAddPostedJob(jobData, token || undefined);
 
       setEmployerJobs([...employerJobs, jobData]);
       setShowCreateJob(false);
@@ -1645,7 +1647,8 @@ const EmployerDashboard = ({ userProfile }: { userProfile: UserProfile }) => {
   const handleDeleteJob = async (jobId: string) => {
     if (!confirm('Are you sure you want to delete this job post?')) return;
     try {
-      await apiDeletePostedJob(jobId);
+      const token = await getToken();
+      await apiDeletePostedJob(jobId, token || undefined);
       setEmployerJobs(employerJobs.filter(j => j.id !== jobId));
     } catch (error) {
       console.error("Failed to delete job:", error);
@@ -2395,9 +2398,9 @@ export default function App() {
         if (isSignedIn && user) {
           setCheckingProfile(true);
           try {
-          const existingProfile = await apiGetStoredProfile(user.id);
-          const requestedRole = (localStorage.getItem('intendedRole') as 'candidate' | 'recruiter') || existingProfile?.role || 'candidate';
           const token = await getToken();
+          const existingProfile = await apiGetStoredProfile(user.id, token || undefined);
+          const requestedRole = (localStorage.getItem('intendedRole') as 'candidate' | 'recruiter') || existingProfile?.role || 'candidate';
           const roleResponse = await fetch('/api/auth/role', { method:'POST', headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`}, body:JSON.stringify({role:requestedRole}) });
           if (!roleResponse.ok) throw new Error('Could not load your account role');
           const roleData = await roleResponse.json();
@@ -2405,7 +2408,7 @@ export default function App() {
           // Clerk public metadata is the authoritative role; keep the portal profile in sync.
           if (existingProfile) {
             const profile = { ...existingProfile, role };
-            if (existingProfile.role !== role) await apiSaveProfile(profile);
+            if (existingProfile.role !== role) await apiSaveProfile(profile, token || undefined);
             setUserProfile(profile);
             localStorage.removeItem('intendedRole');
           } else {
@@ -2415,7 +2418,7 @@ export default function App() {
               name: user.fullName || user.primaryEmailAddress?.emailAddress?.split('@')[0] || 'User',
               role
             };
-            await apiSaveProfile(newProfile);
+            await apiSaveProfile(newProfile, token || undefined);
             setUserProfile(newProfile);
             localStorage.removeItem('intendedRole');
           }
