@@ -47,7 +47,7 @@ export async function generateJsonWithClient<T>(client: Pick<GoogleGenAI, 'model
 export async function generateJson<T>(systemInstruction: string, prompt: string, responseSchema: JsonSchema, maxOutputTokens = 4096): Promise<T> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('Gemini is not configured');
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
   const client = new GoogleGenAI({ apiKey });
   return generateJsonWithClient<T>(client, model, systemInstruction, prompt, responseSchema, maxOutputTokens);
 }

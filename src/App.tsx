@@ -1349,6 +1349,7 @@ const JobSeekerDashboard = ({ userProfile, setActivePage }: { userProfile: UserP
   const { getToken } = useAuth();
   const [applications, setApplications] = useState<Application[]>([]);
   const [externalJobs, setExternalJobs] = useState<Job[]>([]);
+  const [resumeSearchQuery, setResumeSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -1374,8 +1375,9 @@ const JobSeekerDashboard = ({ userProfile, setActivePage }: { userProfile: UserP
   useEffect(() => {
     const getExternalJobs = async () => {
       try {
-        // Fetch a diverse mix for the dashboard
-        const jobs = await fetchExternalJobs('Software OR Marketing OR Design Jobs India');
+        const savedQuery = localStorage.getItem(`hirely_resume_search_${userProfile.uid}`) || '';
+        setResumeSearchQuery(savedQuery);
+        const jobs = await fetchExternalJobs(savedQuery || 'Software OR Marketing OR Design Jobs India');
         setExternalJobs(jobs.slice(0, 6)); // Show top 6
       } catch (error) {
         console.error("Error fetching external jobs:", error);
@@ -1502,8 +1504,8 @@ const JobSeekerDashboard = ({ userProfile, setActivePage }: { userProfile: UserP
           <div className="lg:col-span-2">
             <div className="flex justify-between items-end mb-6">
               <div>
-                <h2 className="text-2xl font-bold text-slate-900">Recommended Opportunities</h2>
-                <p className="text-slate-500 text-sm">External jobs curated for you</p>
+                <h2 className="text-2xl font-bold text-slate-900">{resumeSearchQuery ? 'Recommended for your resume' : 'Recommended Opportunities'}</h2>
+                <p className="text-slate-500 text-sm">{resumeSearchQuery ? `Matched using resume skills: ${resumeSearchQuery}` : 'Upload your resume in Resume Checker for personalized matches.'}</p>
               </div>
               <button
                 onClick={() => setActivePage('jobs')}
@@ -1992,18 +1994,21 @@ const ResumeBuilderPage = () => {
   );
 };
 
-const ResumeCheckerPage = () => {
+const ResumeCheckerPage = ({ userProfile }: { userProfile: UserProfile | null }) => {
   const { getToken } = useAuth();
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState('');
   const [fileName, setFileName] = useState('');
+  const [recommendedJobs, setRecommendedJobs] = useState<Job[]>([]);
+  const [searchingJobs, setSearchingJobs] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const analyzeResume = async (file?: File) => {
     if (!file) return;
     setError('');
     setResult(null);
+    setRecommendedJobs([]);
     const extension = file.name.split('.').pop()?.toLowerCase();
     if (!['pdf', 'txt'].includes(extension || '')) { setError('Choose a PDF or TXT resume.'); return; }
     if (file.size > 2 * 1024 * 1024) { setError('Resume must be 2 MB or smaller.'); return; }
@@ -2030,10 +2035,18 @@ const ResumeCheckerPage = () => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Resume analysis failed.');
       setResult(data);
+      if (userProfile && typeof data.jobSearchQuery === 'string' && data.jobSearchQuery.trim()) {
+        const query = data.jobSearchQuery.trim().slice(0, 180);
+        localStorage.setItem(`hirely_resume_search_${userProfile.uid}`, query);
+        setSearchingJobs(true);
+        const matches = await fetchExternalJobs(query);
+        setRecommendedJobs(matches.slice(0, 6));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Resume analysis failed. Please try again.');
     } finally {
       setAnalyzing(false);
+      setSearchingJobs(false);
     }
   };
 
@@ -2070,6 +2083,7 @@ const ResumeCheckerPage = () => {
           {error && <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700">{error}</div>}
 
           {result && (
+            <>
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -2117,6 +2131,25 @@ const ResumeCheckerPage = () => {
                 </div>
               </div>
             </motion.div>
+            <section className="rounded-[2rem] border border-slate-100 bg-white p-8 shadow-xl">
+              <div className="mb-6">
+                <h3 className="text-2xl font-black text-slate-900">Job matches for this resume</h3>
+                <p className="mt-1 text-sm text-slate-500">Based on skills and roles found in your resume: {result.jobSearchQuery}</p>
+              </div>
+              {searchingJobs ? <p className="py-8 text-center text-slate-500">Finding jobs that match your resume…</p> : recommendedJobs.length ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {recommendedJobs.map(job => (
+                    <article key={job.id} className="rounded-2xl border border-slate-100 p-5">
+                      <h4 className="font-bold text-slate-900">{job.title}</h4>
+                      <p className="mt-1 text-sm font-medium text-indigo-700">{job.company} · {job.location}</p>
+                      <p className="mt-3 line-clamp-4 text-sm text-slate-600">{job.description}</p>
+                      {job.externalUrl && <a href={job.externalUrl} target="_blank" rel="noreferrer" className="mt-4 inline-block text-sm font-bold text-indigo-700 underline">View job</a>}
+                    </article>
+                  ))}
+                </div>
+              ) : <p className="py-8 text-center text-slate-500">No current matches found. Try again later.</p>}
+            </section>
+            </>
           )}
         </div>
       </div>
@@ -2511,7 +2544,7 @@ export default function App() {
             {activePage === 'home' && <HomePage setActivePage={setActivePage} setSearchQuery={setSearchQuery} onCompanyClick={handleCompanyClick} />}
             {activePage === 'jobs' && <JobsPage userProfile={userProfile} setActivePage={setActivePage} initialSearch={searchQuery} />}
             {activePage === 'resume-builder' && <ResumeBuilderPage />}
-            {activePage === 'resume-checker' && <ResumeCheckerPage />}
+            {activePage === 'resume-checker' && <ResumeCheckerPage userProfile={userProfile} />}
             {activePage === 'cover-letter' && <CoverLetterPage />}
             {activePage === 'company-profile' && <CompanyProfilePage companyName={selectedCompany} setActivePage={setActivePage} />}
             {activePage === 'join' && <JoinPage />}

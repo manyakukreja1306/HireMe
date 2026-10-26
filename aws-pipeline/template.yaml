@@ -60,7 +60,7 @@ Parameters:
     Description: Server-side Gemini key. Never configure this on the client.
   GeminiModel:
     Type: String
-    Default: gemini-2.5-flash
+    Default: gemini-3.8-flash
   PipelineAssertionSecret:
     Type: String
     NoEcho: true

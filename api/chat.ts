@@ -30,7 +30,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         // Use Gemini REST API directly (no SDK needed for serverless)
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+        const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${GEMINI_API_KEY}`;
 
         const geminiResponse = await fetch(apiUrl, {
             method: 'POST',
