@@ -426,7 +426,11 @@ Candidate just said: "${message}"
 Respond naturally as the interviewer:`;
 
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-        const response = await ai.models.generateContent({ model: process.env.GEMINI_MODEL || 'gemini-3.8-flash', contents: systemPrompt });
+        const response = await ai.models.generateContent({
+            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+            contents: systemPrompt,
+            config: { maxOutputTokens: 400, abortSignal: AbortSignal.timeout(25_000) },
+        });
 
         res.json({ reply: response.text });
     } catch (error: any) {

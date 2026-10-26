@@ -113,6 +113,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: userText, mode, history }),
+            signal: AbortSignal.timeout(35_000),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'The interview coach could not respond.');
@@ -154,7 +155,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             try { recognitionRef.current?.start(); } catch { }
         } catch (err) {
             console.error('AI error:', err);
-            setErrorMessage(err instanceof Error ? err.message : 'The interview coach could not respond. Please try again.');
+            setErrorMessage(err instanceof DOMException && err.name === 'TimeoutError' ? 'The coach took too long to respond. Click Send Answer and try again.' : err instanceof Error ? err.message : 'The interview coach could not respond. Please try again.');
             setPhase('listening');
             try { recognitionRef.current?.start(); } catch { }
         } finally {
@@ -186,7 +187,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             try { recognitionRef.current?.start(); } catch { }
         } catch (err) {
             console.error('Start error:', err);
-            setErrorMessage(err instanceof Error ? err.message : 'The interview coach could not start. Please try again.');
+            setErrorMessage(err instanceof DOMException && err.name === 'TimeoutError' ? 'The coach took too long to start. Please try again.' : err instanceof Error ? err.message : 'The interview coach could not start. Please try again.');
             setPhase('idle');
         } finally {
             isProcessingRef.current = false;
