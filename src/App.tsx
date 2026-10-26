@@ -907,7 +907,7 @@ const JobsPage = ({ userProfile, setActivePage, initialSearch = '' }: { userProf
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ resumeDataUrl }),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(55_000),
       });
       const analysis = await response.json();
       if (!response.ok) throw new Error(analysis.error || 'Could not analyze this resume.');
@@ -2112,7 +2112,7 @@ const ResumeCheckerPage = ({ userProfile }: { userProfile: UserProfile | null })
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ resumeDataUrl }),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(55_000),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Resume analysis failed.');

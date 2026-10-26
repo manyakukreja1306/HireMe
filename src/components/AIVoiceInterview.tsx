@@ -113,7 +113,7 @@ export const AIVoiceInterview = ({ currentUser, onClose }: { currentUser: UserPr
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: userText, mode, history }),
-            signal: AbortSignal.timeout(35_000),
+            signal: AbortSignal.timeout(45_000),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'The interview coach could not respond.');

@@ -58,9 +58,10 @@ function geminiErrorStatus(error: any): number {
     return Number.isFinite(status) ? status : 0;
 }
 
-function geminiErrorKind(error: any): 'key' | 'quota' | 'model' | 'busy' | 'other' {
+function geminiErrorKind(error: any): 'key' | 'quota' | 'model' | 'busy' | 'timeout' | 'other' {
     const status = geminiErrorStatus(error);
     const text = geminiErrorText(error);
+    if (error?.name === 'AbortError' || error?.name === 'TimeoutError' || /OPERATION WAS ABORTED|TIMED OUT|TIMEOUT/.test(text)) return 'timeout';
     if (status === 401 || status === 403 || /API_KEY_INVALID|API KEY NOT VALID|PERMISSION_DENIED|UNAUTHENTICATED/.test(text)) return 'key';
     if (status === 429 || /RESOURCE_EXHAUSTED|QUOTA_EXCEEDED|RATE_LIMIT|TOO MANY REQUESTS/.test(text)) return 'quota';
     if (status === 404 || /MODEL_NOT_FOUND|NOT_FOUND/.test(text)) return 'model';
@@ -74,6 +75,7 @@ function geminiErrorMessage(error: any) {
         case 'quota': return 'Gemini free-tier quota is temporarily exhausted for this project. Wait for the quota window to reset, then try again.';
         case 'model': return 'The Gemini model is unavailable to this project. Check model access in Google AI Studio.';
         case 'busy': return 'Gemini is temporarily busy. The app tried its free-tier backup model too; please retry in a minute.';
+        case 'timeout': return 'Gemini took too long to respond, even after trying the free-tier backup model. Please try again.';
         default: return 'Gemini could not generate a reply. Check the Google AI Studio project and try again.';
     }
 }
@@ -81,14 +83,19 @@ function geminiErrorMessage(error: any) {
 const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash';
 const GEMINI_FREE_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL?.trim() || 'gemini-3.6-flash';
 
-async function generateGeminiContent(ai: GoogleGenAI, request: Omit<GenerateContentParameters, 'model'>) {
+async function generateGeminiContent(ai: GoogleGenAI, request: Omit<GenerateContentParameters, 'model'>, timeoutMs: number) {
+    const generate = (model: string) => ai.models.generateContent({
+        ...request,
+        model,
+        config: { ...request.config, abortSignal: AbortSignal.timeout(timeoutMs) },
+    });
     try {
-        return await ai.models.generateContent({ ...request, model: GEMINI_PRIMARY_MODEL });
+        return await generate(GEMINI_PRIMARY_MODEL);
     } catch (error: any) {
         const kind = geminiErrorKind(error);
-        if ((kind !== 'quota' && kind !== 'model' && kind !== 'busy') || GEMINI_FREE_FALLBACK_MODEL === GEMINI_PRIMARY_MODEL) throw error;
+        if ((kind !== 'quota' && kind !== 'model' && kind !== 'busy' && kind !== 'timeout') || GEMINI_FREE_FALLBACK_MODEL === GEMINI_PRIMARY_MODEL) throw error;
         console.warn(`Gemini ${kind} response; retrying once with the free-tier fallback model.`);
-        return await ai.models.generateContent({ ...request, model: GEMINI_FREE_FALLBACK_MODEL });
+        return await generate(GEMINI_FREE_FALLBACK_MODEL);
     }
 }
 
@@ -411,8 +418,8 @@ app.post('/api/chat', async (req, res) => {
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         const response = await generateGeminiContent(ai, {
             contents: `You are Hirely AI, a highly professional, helpful, and concise recruiter assistant for an innovative job portal named Hirely. Keep your answers short (1-3 sentences) and friendly. User says: ${message}`,
-            config: { maxOutputTokens: 220, abortSignal: AbortSignal.timeout(25_000) },
-        });
+            config: { maxOutputTokens: 220 },
+        }, 20_000);
 
         res.json({ reply: response.text });
     } catch (error: any) {
@@ -461,8 +468,8 @@ Respond naturally as the interviewer:`;
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         const response = await generateGeminiContent(ai, {
             contents: systemPrompt,
-            config: { maxOutputTokens: 220, abortSignal: AbortSignal.timeout(25_000) },
-        });
+            config: { maxOutputTokens: 220 },
+        }, 20_000);
 
         res.json({ reply: response.text });
     } catch (error: any) {
@@ -503,8 +510,8 @@ app.post('/api/resume-check', async (req, res) => {
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         const response = await generateGeminiContent(ai, {
             contents: [{ role: 'user', parts }],
-            config: { responseMimeType: 'application/json', maxOutputTokens: 800, abortSignal: AbortSignal.timeout(45_000) },
-        });
+            config: { responseMimeType: 'application/json', maxOutputTokens: 800 },
+        }, 22_000);
         const result = JSON.parse(response.text || '{}');
         if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100 || typeof result.summary !== 'string' || !Array.isArray(result.tips) || typeof result.jobSearchQuery !== 'string') throw new Error('Invalid resume analysis response');
         return res.json({ score: result.score, summary: result.summary.slice(0, 1200), tips: result.tips.filter((tip: unknown) => typeof tip === 'string').slice(0, 5), jobSearchQuery: result.jobSearchQuery.slice(0, 180) });
