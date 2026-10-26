@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { createClerkClient, verifyToken } from '@clerk/backend';
+import { GoogleGenAI, type GenerateContentParameters } from '@google/genai';
 import { createAuthorizedApplication, enrollRole, getPipeline, listAuthorizedApplications, startPipeline, submitPipelineAnswers, updateAuthorizedApplication } from '../src/pipelineBridge.js';
 
 dotenv.config({ path: ['.env.local', '.env'] });
@@ -47,13 +48,46 @@ const supabase: any = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
     : null;
 const clerk = process.env.CLERK_SECRET_KEY ? createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY }) : null;
 
+function geminiErrorText(error: any): string {
+    const parts = [error?.message, error?.statusText, error?.error?.message, error?.error?.status, error?.response?.body];
+    return parts.filter(Boolean).map((part) => typeof part === 'string' ? part : JSON.stringify(part)).join(' ').toUpperCase();
+}
+
+function geminiErrorStatus(error: any): number {
+    const status = Number(error?.status || error?.statusCode || error?.code || error?.response?.status || error?.error?.code);
+    return Number.isFinite(status) ? status : 0;
+}
+
+function geminiErrorKind(error: any): 'key' | 'quota' | 'model' | 'other' {
+    const status = geminiErrorStatus(error);
+    const text = geminiErrorText(error);
+    if (status === 401 || status === 403 || /API_KEY_INVALID|API KEY NOT VALID|PERMISSION_DENIED|UNAUTHENTICATED/.test(text)) return 'key';
+    if (status === 429 || /RESOURCE_EXHAUSTED|QUOTA_EXCEEDED|RATE_LIMIT|TOO MANY REQUESTS/.test(text)) return 'quota';
+    if (status === 404 || /MODEL_NOT_FOUND|NOT_FOUND/.test(text)) return 'model';
+    return 'other';
+}
+
 function geminiErrorMessage(error: any) {
-    const status = Number(error?.status || error?.statusCode || error?.code);
-    const code = String(error?.statusText || error?.message || error?.error?.status || '').toUpperCase();
-    if (status === 401 || status === 403 || /API_KEY_INVALID|PERMISSION_DENIED|UNAUTHENTICATED/.test(code)) return 'Gemini rejected this API key or its project permissions. Check the key in Google AI Studio and its API restrictions.';
-    if (status === 429 || /RESOURCE_EXHAUSTED|QUOTA_EXCEEDED/.test(code)) return 'Gemini quota is exhausted or rate-limited. Check the project quota in Google AI Studio and try again later.';
-    if (status === 404 || /NOT_FOUND|MODEL_NOT_FOUND/.test(code)) return 'The configured Gemini model is unavailable to this project. Check GEMINI_MODEL and model access.';
-    return 'Gemini could not generate a reply. Check the API key, model access, and available quota.';
+    switch (geminiErrorKind(error)) {
+        case 'key': return 'Gemini rejected this API key or its project permissions. Check the key in Google AI Studio and make sure the Generative Language API is allowed.';
+        case 'quota': return 'Gemini free-tier quota is temporarily exhausted for this project. Wait for the quota window to reset, then try again.';
+        case 'model': return 'The Gemini model is unavailable to this project. Check model access in Google AI Studio.';
+        default: return 'Gemini could not generate a reply. Check the Google AI Studio project and try again.';
+    }
+}
+
+const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash';
+const GEMINI_FREE_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL?.trim() || 'gemini-3.6-flash';
+
+async function generateGeminiContent(ai: GoogleGenAI, request: Omit<GenerateContentParameters, 'model'>) {
+    try {
+        return await ai.models.generateContent({ ...request, model: GEMINI_PRIMARY_MODEL });
+    } catch (error: any) {
+        const kind = geminiErrorKind(error);
+        if ((kind !== 'quota' && kind !== 'model') || GEMINI_FREE_FALLBACK_MODEL === GEMINI_PRIMARY_MODEL) throw error;
+        console.warn(`Gemini ${kind} response; retrying once with the free-tier fallback model.`);
+        return await ai.models.generateContent({ ...request, model: GEMINI_FREE_FALLBACK_MODEL });
+    }
 }
 
 async function authorize(req: any, res: any, allowedRoles: string[] = []) {
@@ -361,8 +395,6 @@ app.get('/api/health', (_req, res) => {
 });
 
 // --- AI Chatbot ---
-import { GoogleGenAI } from '@google/genai';
-
 app.post('/api/chat', async (req, res) => {
     const identity = await authorize(req, res); if (!identity) return;
     try {
@@ -375,10 +407,9 @@ app.post('/api/chat', async (req, res) => {
         }
 
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-        const response = await ai.models.generateContent({
-            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-            contents: `You are Hirely AI, a highly professional, helpful, and concise recruiter assistant for an innovative job portal named Hirely. Keep your answers short (1-3 sentences) and friendly. 
-            User says: ${message}`
+        const response = await generateGeminiContent(ai, {
+            contents: `You are Hirely AI, a highly professional, helpful, and concise recruiter assistant for an innovative job portal named Hirely. Keep your answers short (1-3 sentences) and friendly. User says: ${message}`,
+            config: { maxOutputTokens: 220, abortSignal: AbortSignal.timeout(25_000) },
         });
 
         res.json({ reply: response.text });
@@ -407,8 +438,8 @@ app.post('/api/voice-chat', async (req, res) => {
         };
 
         const modeInstruction = modePrompts[mode] || modePrompts['technical'];
-        const conversationContext = (history || [])
-            .map((m: any) => `${m.role === 'ai' ? 'Interviewer' : 'Candidate'}: ${m.text}`)
+        const conversationContext = (Array.isArray(history) ? history.slice(-8) : [])
+            .map((m: any) => `${m.role === 'ai' ? 'Interviewer' : 'Candidate'}: ${String(m.text || '').slice(0, 900)}`)
             .join('\n');
 
         const systemPrompt = `You are Hirely AI, a professional and realistic job interview coach.
@@ -426,10 +457,9 @@ Candidate just said: "${message}"
 Respond naturally as the interviewer:`;
 
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-        const response = await ai.models.generateContent({
-            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+        const response = await generateGeminiContent(ai, {
             contents: systemPrompt,
-            config: { maxOutputTokens: 400, abortSignal: AbortSignal.timeout(25_000) },
+            config: { maxOutputTokens: 220, abortSignal: AbortSignal.timeout(25_000) },
         });
 
         res.json({ reply: response.text });
@@ -469,10 +499,9 @@ app.post('/api/resume-check', async (req, res) => {
         }
 
         const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-        const response = await ai.models.generateContent({
-            model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+        const response = await generateGeminiContent(ai, {
             contents: [{ role: 'user', parts }],
-            config: { responseMimeType: 'application/json', maxOutputTokens: 1200 },
+            config: { responseMimeType: 'application/json', maxOutputTokens: 800, abortSignal: AbortSignal.timeout(45_000) },
         });
         const result = JSON.parse(response.text || '{}');
         if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100 || typeof result.summary !== 'string' || !Array.isArray(result.tips) || typeof result.jobSearchQuery !== 'string') throw new Error('Invalid resume analysis response');
