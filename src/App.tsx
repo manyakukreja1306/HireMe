@@ -1458,7 +1458,8 @@ const JobSeekerDashboard = ({ userProfile, setActivePage }: { userProfile: UserP
         const savedQuery = localStorage.getItem(`hirely_resume_search_${userProfile.uid}`) || '';
         setResumeSearchQuery(savedQuery);
         const jobs = await fetchExternalJobs(savedQuery || 'Software OR Marketing OR Design Jobs India');
-        setExternalJobs(jobs.slice(0, 6)); // Show top 6
+        const resumeMatches = savedQuery ? rankJobsForResume(jobs, savedQuery) : [];
+        setExternalJobs((resumeMatches.length ? resumeMatches : jobs).slice(0, 6)); // Show top 6, prioritizing resume matches when available
       } catch (error) {
         console.error("Error fetching external jobs:", error);
       } finally {
