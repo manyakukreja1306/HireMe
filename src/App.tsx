@@ -275,6 +275,7 @@ const Navbar = ({ activePage, setActivePage }: { activePage: string, setActivePa
   const navItems = [
     { id: 'home', label: 'Home' },
     { id: 'jobs', label: 'Find Jobs' },
+    { id: 'resume-checker', label: 'Resume Checker' },
   ];
 
   return (
@@ -1831,11 +1832,14 @@ const EmployerDashboard = ({ userProfile }: { userProfile: UserProfile }) => {
   );
 };
 
-const DashboardPage = ({ setActivePage, userProfile }: { setActivePage: (p: string) => void, userProfile: UserProfile | null }) => {
+const DashboardPage = ({ setActivePage, userProfile, profileError }: { setActivePage: (p: string) => void, userProfile: UserProfile | null, profileError?: string }) => {
   if (!userProfile) {
     return (
       <div className="pt-32 pb-20 px-6 min-h-[70vh] flex items-center justify-center">
-        <p className="text-slate-500">Loading profile...</p>
+        <div className="max-w-lg rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
+          <p className="font-semibold text-slate-800">{profileError || 'Loading your profile…'}</p>
+          {profileError && <p className="mt-2 text-sm text-slate-600">Open the production site at hireme-iota-ten.vercel.app, sign in again, then return to Dashboard.</p>}
+        </div>
       </div>
     );
   }
@@ -2413,6 +2417,7 @@ export default function App() {
   const { getToken } = useAuth();
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [checkingProfile, setCheckingProfile] = useState(true);
+  const [profileError, setProfileError] = useState('');
 
   const handleCompanyClick = (name: string) => {
     setSelectedCompany(name);
@@ -2424,6 +2429,7 @@ export default function App() {
       if (isLoaded) {
         if (isSignedIn && user) {
           setCheckingProfile(true);
+          setProfileError('');
           try {
           const token = await getToken();
           const existingProfile = await apiGetStoredProfile(user.id, token || undefined);
@@ -2452,11 +2458,13 @@ export default function App() {
           } catch (error) {
             console.error('Account setup could not be completed:', error instanceof Error ? error.name : 'Error');
             setUserProfile(null);
+            setProfileError('We could not load your profile for this deployment.');
           } finally {
             setCheckingProfile(false);
           }
         } else {
           setUserProfile(null);
+          setProfileError('');
           setCheckingProfile(false);
         }
       }
@@ -2507,7 +2515,7 @@ export default function App() {
             {activePage === 'cover-letter' && <CoverLetterPage />}
             {activePage === 'company-profile' && <CompanyProfilePage companyName={selectedCompany} setActivePage={setActivePage} />}
             {activePage === 'join' && <JoinPage />}
-            {activePage === 'dashboard' && <DashboardPage setActivePage={setActivePage} userProfile={userProfile} />}
+            {activePage === 'dashboard' && <DashboardPage setActivePage={setActivePage} userProfile={userProfile} profileError={profileError} />}
             {activePage === 'privacy' && <PrivacyPolicyPage />}
             {activePage === 'contact' && <ContactPage />}
           </motion.div>
