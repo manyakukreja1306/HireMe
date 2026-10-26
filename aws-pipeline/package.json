@@ -1,0 +1,23 @@
+{
+  "name": "hirely-aws-pipeline",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "sam build --template-file template.yaml",
+    "test": "node --import tsx --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.900.0",
+    "@aws-sdk/client-lambda": "^3.900.0",
+    "@aws-sdk/client-s3": "^3.900.0",
+    "@aws-sdk/lib-dynamodb": "^3.900.0",
+    "@aws-sdk/s3-request-presigner": "^3.900.0",
+    "@google/genai": "^1.43.0",
+    "esbuild": "^0.25.0",
+    "mammoth": "1.9.1",
+    "pdf-parse": "1.1.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

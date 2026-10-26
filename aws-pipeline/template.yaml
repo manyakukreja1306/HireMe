@@ -1,0 +1,406 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Hirely hiring decision support pipeline using API Gateway, Lambda, private S3, and DynamoDB.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 60
+    MemorySize: 512
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        PIPELINE_TABLE: !Ref PipelineTable
+        RESUME_BUCKET: !Ref ResumeBucket
+        MATCH_THRESHOLD: !Ref MatchThreshold
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+    Description: Isolated table and bucket suffix for this deployment stage.
+  ProductionOrigin:
+    Type: String
+    Description: Exact HTTPS Vercel origin for this stage, for example https://hirely-demo.vercel.app.
+    AllowedPattern: '^https://[A-Za-z0-9.-]+$'
+  MonthlyBudgetAmount:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: Monthly USD budget alarm threshold for this demo.
+  BudgetAlertEmail:
+    Type: String
+    Description: Email address that receives AWS budget notifications.
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+  MatchThreshold:
+    Type: Number
+    Default: 70
+    MinValue: 0
+    MaxValue: 100
+  ClerkIssuer:
+    Type: String
+    Description: Exact Clerk JWT issuer URL for the Hirely instance.
+    MinLength: 8
+  ClerkAudience:
+    Type: String
+    Default: hirely-api
+    Description: Must match the aud claim in the Clerk JWT template.
+  MaxResumeBytes:
+    Type: Number
+    Default: 2000000
+    MinValue: 1024
+    MaxValue: 2000000
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 20
+    Description: Server-side Gemini key. Never configure this on the client.
+  GeminiModel:
+    Type: String
+    Default: gemini-2.5-flash
+  PipelineAssertionSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Random shared HMAC secret for Vercel-to-Gateway ownership context.
+Conditions:
+  IsProduction: !Equals [!Ref Stage, prod]
+
+Resources:
+  DemoMonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub 'hirely-${Stage}-monthly-cost'
+        BudgetLimit: { Amount: !Ref MonthlyBudgetAmount, Unit: USD }
+        TimeUnit: MONTHLY
+        BudgetType: COST
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref BudgetAlertEmail }
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref BudgetAlertEmail }
+  PipelineFailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+  OrchestratorFailureDestination:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref Orchestrator
+      Qualifier: '$LATEST'
+      MaximumRetryAttempts: 2
+      MaximumEventAgeInSeconds: 21600
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt PipelineFailureQueue.Arn
+  ResumeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'hirely-pipeline-${Stage}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules: [{ Id: ExpireDemoDocuments, Status: Enabled, ExpirationInDays: 90 }]
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!Ref ProductionOrigin]
+            AllowedMethods: [PUT, GET, HEAD]
+            AllowedHeaders: ['content-type', 'x-amz-meta-resume-sha256', 'x-amz-meta-application-id', 'x-amz-server-side-encryption']
+            ExposedHeaders: [ETag]
+            MaxAge: 300
+  PipelineTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      TableName: !Sub 'hirely-pipeline-${Stage}'
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProduction, true, false]
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: candidateSub, AttributeType: S }
+        - { AttributeName: recruiterSub, AttributeType: S }
+        - { AttributeName: updatedAt, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - { AttributeName: candidateSub, KeyType: HASH }
+            - { AttributeName: updatedAt, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+        - IndexName: GSI2
+          KeySchema:
+            - { AttributeName: recruiterSub, KeyType: HASH }
+            - { AttributeName: updatedAt, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+  PipelineHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      CorsConfiguration:
+        AllowOrigins: [!Ref ProductionOrigin]
+        AllowHeaders: [authorization, content-type, x-ownership-assertion]
+        AllowMethods: [GET, POST, OPTIONS]
+        MaxAge: 300
+      Auth:
+        DefaultAuthorizer: ClerkJwtAuthorizer
+        Authorizers:
+          ClerkJwtAuthorizer:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              issuer: !Ref ClerkIssuer
+              audience: [!Ref ClerkAudience]
+  PublicApi:
+    Type: AWS::Serverless::Function
+    DependsOn: PublicApiLogGroup
+    Properties:
+      CodeUri: .
+      FunctionName: !Sub 'hirely-${Stage}-public-api'
+      Handler: handlers.publicApiHandler
+      Timeout: 15
+      MemorySize: 512
+      Environment:
+        Variables:
+          PIPELINE_ORCHESTRATOR_FUNCTION: !Ref Orchestrator
+          PIPELINE_ASSERTION_SECRET: !Ref PipelineAssertionSecret
+          MAX_RESUME_BYTES: !Ref MaxResumeBytes
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [s3:PutObject, s3:GetObject]
+              Resource: !Sub '${ResumeBucket.Arn}/resumes/*'
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem]
+              Resource: !GetAtt PipelineTable.Arn
+            - Effect: Allow
+              Action: [lambda:InvokeFunction]
+              Resource: !GetAtt Orchestrator.Arn
+      Events:
+        UploadResume:
+          Type: HttpApi
+          Properties: { ApiId: !Ref PipelineHttpApi, Path: /uploads/resume, Method: POST }
+        StartPipeline:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PipelineHttpApi
+            Path: '/pipeline/{applicationId}/run'
+            Method: POST
+        GetPipeline:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PipelineHttpApi
+            Path: '/pipeline/{applicationId}'
+            Method: GET
+        GenerateInterview:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PipelineHttpApi
+            Path: '/pipeline/{applicationId}/questions'
+            Method: POST
+        SubmitAnswers:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PipelineHttpApi
+            Path: '/pipeline/{applicationId}/answers'
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/handlers.ts]
+        Target: es2022
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Minify: true
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+  ResumeAgent:
+    Type: AWS::Serverless::Function
+    DependsOn: ResumeAgentLogGroup
+    Properties:
+      CodeUri: .
+      FunctionName: !Sub 'hirely-${Stage}-resume-agent'
+      Handler: handlers.resumeHandler
+      MemorySize: 1024
+      Timeout: 60
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          GEMINI_API_KEY: !Ref GeminiApiKey
+          GEMINI_MODEL: !Ref GeminiModel
+      Policies:
+        - Statement:
+            - { Effect: Allow, Action: [s3:GetObject], Resource: !Sub '${ResumeBucket.Arn}/resumes/*' }
+            - { Effect: Allow, Action: [dynamodb:PutItem], Resource: !GetAtt PipelineTable.Arn }
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/handlers.ts]
+        Target: es2022
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Minify: true
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+  MatchingAgent:
+    Type: AWS::Serverless::Function
+    DependsOn: MatchingAgentLogGroup
+    Properties:
+      CodeUri: .
+      FunctionName: !Sub 'hirely-${Stage}-matching-agent'
+      Handler: handlers.matchingHandler
+      Timeout: 60
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables: { GEMINI_API_KEY: !Ref GeminiApiKey, GEMINI_MODEL: !Ref GeminiModel }
+      Policies:
+        - Statement: [{ Effect: Allow, Action: [dynamodb:PutItem], Resource: !GetAtt PipelineTable.Arn }]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/handlers.ts]
+        Target: es2022
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Minify: true
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+  InterviewAgent:
+    Type: AWS::Serverless::Function
+    DependsOn: InterviewAgentLogGroup
+    Properties:
+      CodeUri: .
+      FunctionName: !Sub 'hirely-${Stage}-interview-agent'
+      Handler: handlers.interviewHandler
+      Timeout: 60
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables: { GEMINI_API_KEY: !Ref GeminiApiKey, GEMINI_MODEL: !Ref GeminiModel }
+      Policies:
+        - Statement: [{ Effect: Allow, Action: [dynamodb:GetItem, dynamodb:PutItem], Resource: !GetAtt PipelineTable.Arn }]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/handlers.ts]
+        Target: es2022
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Minify: true
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+  HeadhunterAgent:
+    Type: AWS::Serverless::Function
+    DependsOn: HeadhunterAgentLogGroup
+    Properties:
+      CodeUri: .
+      FunctionName: !Sub 'hirely-${Stage}-headhunter-agent'
+      Handler: handlers.headhunterHandler
+      Timeout: 60
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables: { GEMINI_API_KEY: !Ref GeminiApiKey, GEMINI_MODEL: !Ref GeminiModel }
+      Policies:
+        - Statement: [{ Effect: Allow, Action: [dynamodb:PutItem], Resource: !GetAtt PipelineTable.Arn }]
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/handlers.ts]
+        Target: es2022
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Minify: true
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+  Orchestrator:
+    Type: AWS::Serverless::Function
+    DependsOn: OrchestratorLogGroup
+    Properties:
+      CodeUri: .
+      FunctionName: !Sub 'hirely-${Stage}-orchestrator'
+      Handler: handlers.orchestratorHandler
+      Timeout: 300
+      Environment:
+        Variables:
+          RESUME_AGENT_FUNCTION: !Ref ResumeAgent
+          MATCHING_AGENT_FUNCTION: !Ref MatchingAgent
+          INTERVIEW_AGENT_FUNCTION: !Ref InterviewAgent
+          HEADHUNTER_AGENT_FUNCTION: !Ref HeadhunterAgent
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem]
+              Resource: !GetAtt PipelineTable.Arn
+        - { LambdaInvokePolicy: { FunctionName: !Ref ResumeAgent } }
+        - { LambdaInvokePolicy: { FunctionName: !Ref MatchingAgent } }
+        - { LambdaInvokePolicy: { FunctionName: !Ref InterviewAgent } }
+        - { LambdaInvokePolicy: { FunctionName: !Ref HeadhunterAgent } }
+        - Statement:
+            - Effect: Allow
+              Action: [sqs:SendMessage]
+              Resource: !GetAtt PipelineFailureQueue.Arn
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints: [src/handlers.ts]
+        Target: es2022
+        Format: esm
+        OutExtension: [.js=.mjs]
+        Minify: true
+        Sourcemap: true
+        External: ['@aws-sdk/*']
+  PublicApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/aws/lambda/hirely-${Stage}-public-api', RetentionInDays: 14 }
+  ResumeAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/aws/lambda/hirely-${Stage}-resume-agent', RetentionInDays: 14 }
+  MatchingAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/aws/lambda/hirely-${Stage}-matching-agent', RetentionInDays: 14 }
+  InterviewAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/aws/lambda/hirely-${Stage}-interview-agent', RetentionInDays: 14 }
+  HeadhunterAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/aws/lambda/hirely-${Stage}-headhunter-agent', RetentionInDays: 14 }
+  OrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub '/aws/lambda/hirely-${Stage}-orchestrator', RetentionInDays: 14 }
+Outputs:
+  PipelineApiUrl:
+    Value: !Sub 'https://${PipelineHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  OrchestratorFunctionName: { Value: !Ref Orchestrator }
+  ResumeBucketName: { Value: !Ref ResumeBucket }
+  PipelineTableName: { Value: !Ref PipelineTable }

@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+.aws-sam/
+work/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+.vercel
+server-data.json
+aws-pipeline/document-service/
