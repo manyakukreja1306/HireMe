@@ -80,7 +80,7 @@ function geminiErrorMessage(error: any) {
     }
 }
 
-const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash';
+const GEMINI_PRIMARY_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash-lite';
 const GEMINI_FREE_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL?.trim() || 'gemini-3.6-flash';
 
 async function generateGeminiContent(ai: GoogleGenAI, request: Omit<GenerateContentParameters, 'model'>, timeoutMs: number) {
@@ -95,7 +95,23 @@ async function generateGeminiContent(ai: GoogleGenAI, request: Omit<GenerateCont
         const kind = geminiErrorKind(error);
         if ((kind !== 'quota' && kind !== 'model' && kind !== 'busy' && kind !== 'timeout') || GEMINI_FREE_FALLBACK_MODEL === GEMINI_PRIMARY_MODEL) throw error;
         console.warn(`Gemini ${kind} response; retrying once with the free-tier fallback model.`);
+        // Give short-lived capacity spikes a moment to settle before switching models.
+        await new Promise((resolve) => setTimeout(resolve, 750 + Math.floor(Math.random() * 500)));
         return await generate(GEMINI_FREE_FALLBACK_MODEL);
+    }
+}
+
+function parseResumeAnalysis(text: string) {
+    const normalized = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    try {
+        return JSON.parse(normalized);
+    } catch {
+        const start = normalized.indexOf('{');
+        const end = normalized.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            try { return JSON.parse(normalized.slice(start, end + 1)); } catch { /* return a clean analysis error below */ }
+        }
+        throw new Error('INVALID_GEMINI_JSON');
     }
 }
 
@@ -512,11 +528,12 @@ app.post('/api/resume-check', async (req, res) => {
             contents: [{ role: 'user', parts }],
             config: { responseMimeType: 'application/json', maxOutputTokens: 800 },
         }, 22_000);
-        const result = JSON.parse(response.text || '{}');
-        if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100 || typeof result.summary !== 'string' || !Array.isArray(result.tips) || typeof result.jobSearchQuery !== 'string') throw new Error('Invalid resume analysis response');
+        const result = parseResumeAnalysis(response.text || '');
+        if (!Number.isInteger(result.score) || result.score < 0 || result.score > 100 || typeof result.summary !== 'string' || !Array.isArray(result.tips) || typeof result.jobSearchQuery !== 'string') throw new Error('INVALID_GEMINI_JSON');
         return res.json({ score: result.score, summary: result.summary.slice(0, 1200), tips: result.tips.filter((tip: unknown) => typeof tip === 'string').slice(0, 5), jobSearchQuery: result.jobSearchQuery.slice(0, 180) });
     } catch (error: any) {
         console.error('Resume check failed:', error.message);
+        if (error?.message === 'INVALID_GEMINI_JSON') return res.status(502).json({ error: 'Gemini returned an incomplete resume analysis. Please try again.' });
         return res.status(502).json({ error: geminiErrorMessage(error) });
     }
 });
